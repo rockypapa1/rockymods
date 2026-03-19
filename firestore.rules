@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: keys
+    // Document ID: auto-generated
+    // Fields:
+    //   - value: string (required, length > 0) - The actual key string
+    //   - isUsed: boolean (required) - Whether the key has been claimed
+    //   - createdAt: number (required) - Timestamp of creation
+    //   - usedAt: number (optional) - Timestamp of when it was used
+    //
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'admin@rockymods.com' || 
+        request.auth.token.email == 'nxxoteam@gmail.com' ||
+        request.auth.token.email == 'master_admin@rockymods.com'
+      );
+    }
+
+    function isValidKey(data) {
+      return data.keys().hasAll(['value', 'isUsed', 'createdAt']) &&
+             data.value is string && data.value.size() > 0 && data.value.size() < 100 &&
+             data.isUsed is bool &&
+             data.createdAt is number &&
+             (!('usedAt' in data) || data.usedAt is number);
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll(['linkShortener1Url', 'linkShortener1ApiToken', 'linkShortener2Url', 'linkShortener2ApiToken']) &&
+             data.linkShortener1Url is string && data.linkShortener1Url.size() > 0 &&
+             data.linkShortener1ApiToken is string && data.linkShortener1ApiToken.size() > 0 &&
+             data.linkShortener2Url is string && data.linkShortener2Url.size() > 0 &&
+             data.linkShortener2ApiToken is string && data.linkShortener2ApiToken.size() > 0;
+    }
+
+    function isValidUserStats(data) {
+      return data.keys().hasAll(['count', 'lastGeneratedAt']) &&
+             data.count is number &&
+             data.lastGeneratedAt is number;
+    }
+
+    function isValidLinkLog(data) {
+      return data.keys().hasAll(['userId', 'shortenerIndex', 'timestamp']) &&
+             data.userId is string &&
+             data.shortenerIndex is number &&
+             data.timestamp is number;
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidSettings(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /userStats/{userId} {
+      // Anyone can read and update their own stats (identified by userId)
+      allow read: if true;
+      allow create, update: if isValidUserStats(request.resource.data);
+    }
+
+    match /linkLogs/{logId} {
+      // Admins can read all logs
+      allow read: if isAdmin();
+      // Users can create logs when they are redirected
+      allow create: if isValidLinkLog(request.resource.data);
+    }
+
+    match /keys/{keyId} {
+      // Anyone can read unused keys to generate one, admins can read all
+      allow read: if isAdmin() || resource.data.isUsed == false;
+      
+      // Only admins can create or delete keys
+      allow create: if isAdmin() && isValidKey(request.resource.data);
+      allow delete: if isAdmin();
+      
+      // Users can only update a key to mark it as used
+      allow update: if (isAdmin() && isValidKey(request.resource.data)) || (
+        isValidKey(request.resource.data) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isUsed', 'usedAt']) &&
+        resource.data.isUsed == false &&
+        request.resource.data.isUsed == true &&
+        request.resource.data.value == resource.data.value &&
+        request.resource.data.createdAt == resource.data.createdAt
+      );
+    }
+  }
+}
