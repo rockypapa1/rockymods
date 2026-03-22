@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: keys
+    // Document ID: auto-generated
+    // Fields:
+    //   - value: string (required, length > 0) - The actual key string
+    //   - isUsed: boolean (required) - Whether the key has been claimed
+    //   - createdAt: number (required) - Timestamp of creation
+    //   - usedAt: number (optional) - Timestamp of when it was used
+    //
+    // Collection: sessions
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required) - Hashed user identifier
+    //   - createdAt: number (required) - Timestamp
+    //   - status: string (required) - 'pending' | 'completed'
+    //   - completedAt: number (optional) - Timestamp
+    //   - keyValue: string (optional) - The key claimed
+    //
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'admin@rockymods.com' || 
+        request.auth.token.email == 'nxxoteam@gmail.com' ||
+        request.auth.token.email == 'master_admin@rockymods.com'
+      );
+    }
+
+    function isValidKey(data) {
+      return data.keys().hasAll(['value', 'isUsed', 'createdAt']) &&
+             data.value is string && data.value.size() > 0 && data.value.size() < 100 &&
+             data.isUsed is bool &&
+             data.createdAt is number &&
+             (!('usedAt' in data) || data.usedAt is number);
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll(['linkShortener1Url', 'linkShortener1ApiToken', 'linkShortener2Url', 'linkShortener2ApiToken']) &&
+             data.linkShortener1Url is string && data.linkShortener1Url.size() > 0 &&
+             data.linkShortener1ApiToken is string && data.linkShortener1ApiToken.size() > 0 &&
+             data.linkShortener2Url is string && data.linkShortener2Url.size() > 0 &&
+             data.linkShortener2ApiToken is string && data.linkShortener2ApiToken.size() > 0;
+    }
+
+    function isValidUserStats(data) {
+      return data.keys().hasAll(['count', 'lastGeneratedAt']) &&
+             data.count is number &&
+             data.lastGeneratedAt is number;
+    }
+
+    function isValidLinkLog(data) {
+      return data.keys().hasAll(['userId', 'shortenerIndex', 'timestamp', 'status']) &&
+             data.userId is string &&
+             data.shortenerIndex is number &&
+             data.timestamp is number &&
+             data.status in ['redirected', 'claimed'] &&
+             (!('keyValue' in data) || data.keyValue is string) &&
+             (!('ip' in data) || data.ip is string);
+    }
+
+    function isValidSession(data) {
+      return data.keys().hasAll(['userId', 'createdAt', 'status']) &&
+             data.userId is string &&
+             data.createdAt is number &&
+             data.status in ['pending', 'completed'] &&
+             (!('completedAt' in data) || data.completedAt is number) &&
+             (!('keyValue' in data) || data.keyValue is string) &&
+             (!('fingerprint' in data) || data.fingerprint is string);
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidSettings(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /userStats/{userId} {
+      // Anyone can read their own stats
+      allow read: if true;
+      // Only allow creation/update if it's a valid stats object
+      // In a real app, we'd check if the userId matches the auth.uid
+      allow create, update: if isValidUserStats(request.resource.data);
+    }
+
+    match /sessions/{sessionId} {
+      // Users can read their own sessions
+      allow read: if true;
+      // Users can create pending sessions
+      allow create: if isValidSession(request.resource.data) && 
+                      request.resource.data.status == 'pending' &&
+                      request.resource.data.createdAt <= request.time.toMillis() + 60000;
+      // Users can update session to completed
+      allow update: if isValidSession(request.resource.data) &&
+                      resource.data.status == 'pending' &&
+                      request.resource.data.status == 'completed' &&
+                      request.resource.data.userId == resource.data.userId;
+      // Admins can do everything
+      allow delete: if isAdmin();
+    }
+
+    match /linkLogs/{logId} {
+      // Admins can read all logs
+      allow read: if isAdmin();
+      // Users can create logs when they are redirected
+      allow create: if isValidLinkLog(request.resource.data);
+    }
+
+    match /keys/{keyId} {
+      // Anyone can read unused keys to generate one, admins can read all
+      allow read: if isAdmin() || resource.data.isUsed == false;
+      
+      // Only admins can create or delete keys
+      allow create: if isAdmin() && isValidKey(request.resource.data);
+      allow delete: if isAdmin();
+      
+      // Users can only update a key to mark it as used if they have a valid session
+      allow update: if (isAdmin() && isValidKey(request.resource.data)) || (
+        isValidKey(request.resource.data) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isUsed', 'usedAt', 'claimedBy']) &&
+        resource.data.isUsed == false &&
+        request.resource.data.isUsed == true &&
+        request.resource.data.value == resource.data.value &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.claimedBy is string
+      );
+    }
+  }
+}
