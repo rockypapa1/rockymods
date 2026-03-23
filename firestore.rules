@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == "nxxoteam@gmail.com" ||
+          request.auth.token.email == "admin@rockymods.com" ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        )) ||
+        request.auth.token.email == "master_admin@rockymods.com"
+      );
+    }
+
+    // Settings: Everyone can read, only admins can write
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // UserStats: Everyone can read and write their own stats
+    // Note: userId here is a hashed IP or fingerprint, not Firebase Auth UID
+    match /userStats/{userId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true; // In a real app, we'd want more validation here
+    }
+
+    // Sessions: Everyone can read and write sessions
+    match /sessions/{sessionId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+    }
+
+    // Keys: Everyone can read available keys, only admins can create/delete.
+    // Users can update a key to mark it as 'used' via transaction.
+    match /keys/{keyId} {
+      allow read: if isAdmin() || resource.data.status == 'available';
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        resource.data.status == 'available' && 
+        request.resource.data.status == 'used' &&
+        request.resource.data.key == resource.data.key &&
+        request.resource.data.createdAt == resource.data.createdAt
+      );
+    }
+
+    // LinkLogs: Admins can read, everyone can create
+    match /linkLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if true;
+    }
+
+    // Users: Admins can do everything, users can manage their own profile
+    match /users/{userId} {
+      allow read, write: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+    }
+    
+    // Default deny for everything else
+    match /{path=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
